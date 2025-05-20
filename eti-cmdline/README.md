@@ -1,4 +1,7 @@
-
+# Forked amendments
+- Use of nlohmann/json library
+- Addition of cmdline option "-J" to dump station details (creates file `ensemble-<channel>.json`)
+- Addition of cmdline option "-x" to exit instead of play
 
 # eti-cmdline
 
