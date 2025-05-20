@@ -18,3 +18,9 @@ do
     echo "--------------------------------"
     eti-cmdline-rtlsdr -J -x -C $block -D 10
 done
+echo "Compiling station list..."
+python stations.py
+echo "Station list in station-list.json"
+num_stations=$(jq "keys[]" station-list.json | wc -l)
+echo "Found $num_stations"
+echo "Have fun"
