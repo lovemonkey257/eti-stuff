@@ -16,5 +16,5 @@ do
     echo "--------------------------------"
     echo "Scanning $block"
     echo "--------------------------------"
-    ./eti-cmdline-rtlsdr -J -x -C $block -D 10
+    eti-cmdline-rtlsdr -J -x -C $block -D 10
 done
