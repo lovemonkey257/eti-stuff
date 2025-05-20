@@ -1,3 +1,4 @@
+project(eti_cmdline)
 cmake_minimum_required( VERSION 2.8.11 )
 ######################################################################
 #       R E A D T H I S
@@ -51,6 +52,7 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 
 ### make sure our local CMake Modules path comes first
 list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_SOURCE_DIR}/cmake/Modules)
+
 
 set(INPUTS)
 
@@ -583,10 +585,14 @@ endif()
 	      target_compile_options(${objectName}  PRIVATE -march=armv7-a -mfloat-abi=hard -mfpu=neon-vfpv4 )
 	   endif()	
 	endif()
+
+	find_package(fmt)
+
 	target_link_libraries (${objectName}
 #	                       ${FFTW3F_LIBRARIES}
 	                       ${extraLibs}
 	                       ${CMAKE_DL_LIBS}
+			       fmt::fmt
 	)
 
 	INSTALL (TARGETS ${objectName} DESTINATION  ${CMAKE_INSTALL_PREFIX})

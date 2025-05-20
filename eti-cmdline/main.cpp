@@ -1,5 +1,10 @@
+/// dablin -D eti-cmdline -d eti-cmdline-rtlsdr -c 11D -s 0xd911
+///
 #
 /*
+ *    Modified 2025 Digital Gangster
+ *    Forked from original 2025
+ *
  *    Copyright (C) 2016, 2017, 2018
  *    Jan van Katwijk (J.vanKatwijk@gmail.com)
  *    Lazy Chair Computing
@@ -23,22 +28,86 @@
  *	This is an example main program, just to show how the software
  *	is to be used. Feel free to adapt to your needs
  */
+
+
 #if !(defined(__MINGW32__) || defined(_WIN32))
-#include        <unistd.h>
-#include	<getopt.h>
+#include <unistd.h>
+#include <getopt.h>
 #endif
 
-#include	<signal.h>
-#include	<atomic>
-#include        <cstdio>
-#include        <iostream>
-#include	<mutex>
-#include	"device-handler.h"
-#include	"band-handler.h"
-#include	"eti-class.h"
+#include <signal.h>
+#include <atomic>
+#include <cstdio>
+#include <iostream>
+#include <mutex>
+#include <map>
+#include "device-handler.h"
+#include "band-handler.h"
+#include "eti-class.h"
 #ifdef	HAVE_DUMPING
 #include	"sndfile.h"
 #endif
+#include <fstream>
+#include <fmt/format.h>
+#include <nlohmann/json.hpp>
+#include <boost/algorithm/string.hpp>
+
+using namespace boost::algorithm;
+using namespace std;
+using std::cerr;
+using std::endl;
+
+std::string	version = "v1.0.2025";
+
+//
+//	Be aware that the callbacks may arrive from different threads,
+//	and most likely do not know from each other. So, apart from
+//	explicitly declaring some variables as being "atomic", 
+//	a light form of locking might be required.
+//
+static std::atomic<bool>    run;
+static std::atomic<bool>    timeSynced;
+static std::atomic<bool>    timesyncSet;
+static std::atomic<int>     signalnoise;
+static std::atomic<int16_t> ficSuccess;
+static std::atomic<bool>    ensembleRecognized;
+
+using json = nlohmann::json;
+
+// Struct to store channels found
+struct dabEnsembleDetails {
+    string ensemble; 
+    string channel;
+    map<string, string> stations;
+};
+// Make the struc JSON serialisable
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(dabEnsembleDetails, ensemble, channel, stations);
+
+dabEnsembleDetails dabEnsemble;
+bool bStopAfterEnsembleDump = false;
+bool bDumpEnsemble = false;
+
+/* Serialise JSON */
+void to_json(json& j, const dabEnsembleDetails& d) {
+    j = json{
+	   {"ensemble", d.ensemble}, 
+	   {"channel", d.channel},
+	   {"stations", d.stations}
+        };
+};
+
+static bool	isSilent	= false;
+std::string	theName;
+std::mutex	mainLocker;
+
+// Statics used by callbacks
+static int	programCounter	= 1;
+static FILE *etiFile;
+static int  cnt	= 0;
+
+callbacks	the_callBacks;
+
+
 
 
 #if (defined(__MINGW32__) || defined(_WIN32))
@@ -60,8 +129,8 @@ char    *optarg;                /* argument associated with option */
  *      Parse argc/argv argument vector.
  */
 int getopt (int nargc, char * const nargv[], const char *ostr) {
-static char *place = EMSG;	/* option letter processing */
-const char *oli; 		/* option letter list index */
+	static char *place = EMSG;	/* option letter processing */
+	const char *oli; 		/* option letter list index */
 
 	if (optreset || !*place) {              /* update scanning pointer */
 	   optreset = 0;
@@ -117,9 +186,22 @@ const char *oli; 		/* option letter list index */
 	return (optopt);                        /* dump back option letter */
 }
 
+BOOL WINAPI
+sighandler (int signum) {
+	if (CTRL_C_EVENT == signum) {
+	   fprintf(stderr, "Signal caught, exiting!\n");
+	   run.store (false);
+	   return TRUE;
+	}
+	return FALSE;
+}
+#else
+static void sighandler (int signum) {
+        fprintf (stderr, "\n\nSignal %d caught, terminating!\n", signum);
+	run.store (false);
+}
 #endif
-using std::cerr;
-using std::endl;
+
 //
 #ifdef	HAVE_RTLSDR
 #include	"rtlsdr-handler/rtlsdr-handler.h"
@@ -144,210 +226,184 @@ using std::endl;
 #elif	HAVE_XMLFILES
 #include	"xml-filereader.h"	// does not work yet
 #endif
-//
-//	Be aware that the callbacks may arrive from different threads,
-//	and most likely do not know from each other. So, apart from
-//	explicitly declaring some variables as being "atomic", 
-//	a light form of locking might be required.
-static
-std::atomic<bool> run;
-static
-std::atomic<bool>timeSynced;
-static
-std::atomic<bool>timesyncSet;
-static
-std::atomic<int> signalnoise;
-static
-std::atomic<int16_t> ficSuccess;
-static
-std::atomic<bool>ensembleRecognized;
 
-static
-bool	isSilent	= false;
-
-std::string	theName;
-std::mutex	mainLocker;
-
-#if defined(__MINGW32) || defined( _WIN32)
-BOOL WINAPI
-sighandler (int signum) {
-	if (CTRL_C_EVENT == signum) {
-	   fprintf(stderr, "Signal caught, exiting!\n");
-	   run. store (false);
-	   return TRUE;
-	}
-	return FALSE;
-}
-#else
-static void sighandler (int signum) {
-        fprintf (stderr, "\n\nSignal %d caught, terminating!\n", signum);
-	run. store (false);
-}
-#endif
-//
-//
 //	The signal from the ofdmprocessor about believing that there
 //	is a DAB signal in the datastream just sets some variables here.
 //	These variables are read in other parts of the program
-void	syncsignalHandler (bool b, void *ctx) {
+void syncsignalHandler (bool b, void *ctx) {
 	(void)ctx;
-	timesyncSet. store (true);	// not needed actually
-	timeSynced. store (b);
+	timesyncSet.store (true);	// not needed actually
+	timeSynced.store (b);
 }
-//
+
 //	The snrsignalHandler is called on a regular basis by the
 //	ofdmProcessor. It merely sets a variable here, other parts
 //	of the program will show or interpret the value
-void	snrsignalHandler (int16_t snr, void *ctx) {
+void snrsignalHandler (int16_t snr, void *ctx) {
 	(void)ctx;
 	signalnoise. store (snr);
 }
-//
+
 //	The same for the fibqualityHandler
-void	fibqualityHandler (int16_t success, void *ctx) {
+void fibqualityHandler (int16_t success, void *ctx) {
 	(void)ctx;
 	ficSuccess. store (success);
 }
-//
+
 //	the function programnameHandler is called whever the
 //	name of a program in the ensemble is detected. It is called
 //	once for each programname
-static
-int	programCounter	= 1;
-void	programnameHandler (std::string name, int SId, void *ctx) {
-	(void)ctx;
-	mainLocker. lock ();
-	fprintf (stderr, "program\t (%2d)\t %s\t %X is in the list\n",
-	                               programCounter ++, name. c_str (), SId);
-	mainLocker. unlock ();
-}
 //
+void programnameHandler (std::string name, int sid, void *ctx) {
+	(void)ctx;
+	mainLocker.lock();
+
+	// Add channel into list
+	trim_right(name);
+	dabEnsemble.stations.insert({ 
+		name.c_str(),
+		fmt::format("{:#x}",sid) 
+	});
+
+	fprintf(stderr, "*** program\t (%2d)\t %s\t %X\n",
+	                               programCounter ++, name.c_str(), sid);
+	mainLocker.unlock();
+}
+
 //	the function ensembleHandler is called when the name of the
 //	ensemble is detected. The function may be called several times
 //	(all occurrences with the same name)
-void	ensemblenameHandler (std::string ensemblename, void *ctx) {
+void ensemblenameHandler (std::string ensemblename, void *ctx) {
 	(void)ctx;
-	if (ensembleRecognized. load ())
+	if (ensembleRecognized.load ())
 	   return;
-	mainLocker. lock ();
-	ensembleRecognized. store (true);
-	fprintf (stderr, "ensemble %s detected\n", ensemblename. c_str ());
+	mainLocker.lock();
+	ensembleRecognized.store(true);
+	fprintf (stderr, "ensemble %s detected\n", ensemblename.c_str());
 	theName = ensemblename;
-	mainLocker. unlock ();
+	mainLocker.unlock();
 }
 
-//
 //	The function etiwriteHandler is called each time an eti frame
 //	is completed. Parameters are the frame and the number of bytes
-static FILE	*etiFile;
-static int	cnt	= 0;
-void	etiwriterHandler (uint8_t *buffer, int32_t amount, void *ctx) {
+void etiwriterHandler (uint8_t *buffer, int32_t amount, void *ctx) {
 	(void)ctx;
 	fwrite (buffer, 1, amount, etiFile);
 	if (!isSilent)
 	   fprintf (stderr, "%d\r", ++cnt);
 }
 
-void	inputStoppedHandler	(void) {
-	run. store (false);
+void inputStoppedHandler	(void) {
+	run.store (false);
 }
 
-void    printOptions (void);
+void printOptions (void);
 
-callbacks	the_callBacks;
 
-int	main (int argc, char **argv) {
-// Default values
-int16_t		timeSyncTime	= 5;
-int16_t		freqSyncTime	= 10;
-uint8_t		theMode		= 1;
-int		nrProcessors	= 4;
-std::string	theChannel	= "11C";
-uint8_t		theBand		= BAND_III;
-deviceHandler	*inputDevice	= nullptr;
-bandHandler	the_bandHandler;
-int32_t		tunedFrequency	= 220000000;	// just a setting
-int		recordTime	= -1;
+
+/* MAIN */
+int main (int argc, char **argv) {
+	// Default values
+	int16_t		timeSyncTime	= 5;
+	int16_t		freqSyncTime	= 10;
+	uint8_t		theMode		= 1;
+	int		nrProcessors	= 4;
+	std::string	theChannel	= "11C";
+	uint8_t		theBand		= BAND_III;
+	deviceHandler	*inputDevice	= nullptr;
+	bandHandler	the_bandHandler;
+	int32_t		tunedFrequency	= 220000000;	// just a setting
+	int		recordTime	= -1;
 #ifdef	HAVE_HACKRF
-int		lnaGain		= 40;
-int		vgaGain		= 40;
-int		ppmOffset	= 0;
-bool		ampEnable	= false;
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:g:Ap:";
+	int		lnaGain		= 40;
+	int		vgaGain		= 40;
+	int		ppmOffset	= 0;
+	bool		ampEnable	= false;
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:g:Ap:";
 #elif	HAVE_PLUTO
-int		plutoGain	= 50;
-bool		pluto_agc	= false;
-bool		filter_on	= true;
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:QF";
+	int		plutoGain	= 50;
+	bool		pluto_agc	= false;
+	bool		filter_on	= true;
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:QF";
 #elif	HAVE_LIME
-int16_t		gain		= 70;
-std::string	antenna		= "Auto";
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:X:";
+	int16_t		gain		= 70;
+	std::string	antenna		= "Auto";
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:X:";
 #elif	HAVE_SDRPLAY	
-int16_t		GRdB		= 30;
-int16_t		lnaState	= 2;
-bool		autoGain	= false;
-int16_t		ppmOffset	= 0;
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:L:Qp:";
+	int16_t		GRdB		= 30;
+	int16_t		lnaState	= 2;
+	bool		autoGain	= false;
+	int16_t		ppmOffset	= 0;
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:L:Qp:";
 #elif	HAVE_SDRPLAY_V3	
-int16_t		GRdB		= 30;
-int16_t		lnaState	= 2;
-bool		autoGain	= false;
-int16_t		ppmOffset	= 0;
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:L:Qp:";
+	int16_t		GRdB		= 30;
+	int16_t		lnaState	= 2;
+	bool		autoGain	= false;
+	int16_t		ppmOffset	= 0;
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:L:Qp:";
 #elif	HAVE_AIRSPY
-int16_t		deviceGain	= 20;
-bool		autoGain	= false;
-bool		rf_bias		= false;
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:p:b";
+	int16_t		deviceGain	= 20;
+	bool		autoGain	= false;
+	bool		rf_bias		= false;
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:p:b";
 #elif	HAVE_RTLSDR
-int16_t		deviceGain	= 50;
-bool		autoGain	= false;
-int16_t		ppmOffset	= 0;
-int		deviceIndex	= 0;
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:Qp:";
+	int16_t		deviceGain	= 50;
+	bool		autoGain	= false;
+	int16_t		ppmOffset	= 0;
+	int		deviceIndex	= 0;
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:Qp:";
 #elif	HAVE_WAVFILES
-std::string	fileName;
-bool		repeater	= true;
-bool		continue_on_eof	= false;
-const char	*optionsString	= "ShP:D:d:M:B:O:F:rt:";
+	std::string	fileName;
+	bool		repeater	= true;
+	bool		continue_on_eof	= false;
+	const char	*optionsString	= "JxShP:D:d:M:B:O:F:rt:";
 #elif	HAVE_RAWFILES
-std::string	fileName;
-bool		repeater	= true;
-bool		continue_on_eof	= false;
-const char	*optionsString	= "ShP:D:d:M:B:O:F:rt:";
+	std::string	fileName;
+	bool		repeater	= true;
+	bool		continue_on_eof	= false;
+	const char	*optionsString	= "JxShP:D:d:M:B:O:F:rt:";
 #elif	HAVE_XMLFILES
-std::string	fileName;
-bool		repeater	= true;
-bool		continue_on_eof	= false;
-const char	*optionsString	= "ShP:D:d:M:B:O:F:rt:";
+	std::string	fileName;
+	bool		repeater	= true;
+	bool		continue_on_eof	= false;
+	const char	*optionsString	= "JxShP:D:d:M:B:O:F:rt:";
 #elif	HAVE_RTL_TCP
-int		deviceGain	= 50;
-bool		autoGain	= false;
-int		ppmOffset	= 0;
-std::string	hostname = "127.0.0.1";		// default
-int32_t		basePort = 1234;		// default
-const char	*optionsString	= "ShP:D:d:M:B:C:O:R:t:G:Qp:H:I:";
+	int		deviceGain	= 50;
+	bool		autoGain	= false;
+	int		ppmOffset	= 0;
+	std::string	hostname = "127.0.0.1";		// default
+	int32_t		basePort = 1234;		// default
+	const char	*optionsString	= "JxShP:D:d:M:B:C:O:R:t:G:Qp:H:I:";
 #endif
 #ifdef	HAVE_DUMPING
-SNDFILE		*dumpFile	= nullptr;
+	SNDFILE		*dumpFile	= nullptr;
 #endif
-int	opt;
+	int	opt;
 #if !(defined(__MINGW32) || defined(_WIN32))
-struct sigaction sigact;
+	struct sigaction sigact;
 #endif
 //
 //	default
-	etiFile		= stdout;
+	etiFile = stdout;
 	std::setlocale (LC_ALL, "");
-	timeSynced.		store (false);
-	timesyncSet.		store (false);
-	ensembleRecognized.	store (false);
-	run.			store (false);
 
-//	for file input some command line parameters are meeaningless
+	// Set atomics defaults
+	timeSynced.store (false);
+	timesyncSet.store (false);
+	ensembleRecognized.store (false);
+	run.store (false);
+
+//	for file input some command line parameters are meaningless
 	while ((opt = getopt (argc, argv, optionsString)) != -1) {
 	   switch (opt) {
+	      case 'x':
+		 bStopAfterEnsembleDump = true;
+		 break;
+
+              case 'J':
+		 bDumpEnsemble = true;
+		 break;
+
 	      case 'P':
 	         nrProcessors	= atoi (optarg);
 	         if (nrProcessors <= 0)
@@ -377,7 +433,7 @@ struct sigaction sigact;
 	         fprintf (stderr, "outputfile = %s\n", optarg);
 	         break;
 
-		  case 't':
+	       case 't':
 	         recordTime	= atoi (optarg);
 	         break;
 
@@ -549,13 +605,13 @@ struct sigaction sigact;
 	   }
 	}
 
-	the_callBacks. theWriter	= etiwriterHandler;
-	the_callBacks. theEnsemble	= ensemblenameHandler;
-	the_callBacks. theProgram	= programnameHandler;
-	the_callBacks. theSyncSignal	= syncsignalHandler;
-	the_callBacks. theSnrSignal	= snrsignalHandler;
-	the_callBacks. theFibQuality	= fibqualityHandler;
-	the_callBacks. theInputStopped	= inputStoppedHandler;
+	the_callBacks.theWriter	      = etiwriterHandler;
+	the_callBacks.theEnsemble     = ensemblenameHandler;
+	the_callBacks.theProgram      = programnameHandler;
+	the_callBacks.theSyncSignal   = syncsignalHandler;
+	the_callBacks.theSnrSignal    = snrsignalHandler;
+	the_callBacks.theFibQuality   = fibqualityHandler;
+	the_callBacks.theInputStopped = inputStoppedHandler;
 
 #if defined(HAVE_RAWFILES) || defined(HAVE_WAVFILES) || defined (HAVE_XMLFILES)
 //	check on name ??
@@ -628,7 +684,8 @@ struct sigaction sigact;
 	   cerr << "Installing device failed, fatal" << e << endl;
 	   exit (3);
 	}
-//
+
+
 //	OK, it seems we have a device
 #if defined( __MINGW32) || defined(_WIN32)
 	SetConsoleCtrlHandler((PHANDLER_ROUTINE)sighandler, TRUE);
@@ -640,7 +697,7 @@ struct sigaction sigact;
 //	sigaction(SIGTERM, &sigact, nullptr);
 //	sigaction(SIGQUIT, &sigact, nullptr);
 #endif
-//
+
 //	do_process (channel);
 	etiClass theWorker (theMode,
 	                    inputDevice,
@@ -651,59 +708,75 @@ struct sigaction sigact;
 	                    &the_callBacks,
 	                    nullptr);
 
-	inputDevice	-> restartReader (tunedFrequency);
-	timesyncSet. store (false);
-	theWorker. start_ofdmProcessing ();
-	while (!timeSynced. load () && (--timeSyncTime >= 0)) 
-	   special_sleep (1);
+	inputDevice-> restartReader (tunedFrequency);
+	timesyncSet.store(false);
+	theWorker.start_ofdmProcessing();
+	while (!timeSynced.load () && (--timeSyncTime >= 0)) 
+	   special_sleep(1);
 
-	if (!timeSynced. load ()) {
+	if (!timeSynced.load ()) {
 	   cerr << "There does not seem to be a DAB signal here" << endl;
 	   exit (1);
 	}
-	else
-	   cerr << "there might be a DAB signal here" << endl;
+
+	// Looks like DAB is present
+	cerr << "there might be a DAB signal here" << endl;
 
 //	give time to collect data on the ensemble and the programs
-//
 	while (--freqSyncTime > 0) {
 	   cerr << "still at most " << freqSyncTime <<  "seconds to wait\r";
 	   special_sleep (1);
-	   if (ensembleRecognized. load ()) {
-	      theWorker. set_syncReached ();
+	   if (ensembleRecognized.load ()) {
+	      theWorker.set_syncReached ();
 	      break;
 	   }
 	}
-
 	cerr << endl;
 
-	if (!ensembleRecognized. load ()) {
+	if (!ensembleRecognized.load ()) {
 	   cerr << "Further waiting does not seem useful, quitting" << endl;
-	   theWorker. stop ();
+	   theWorker.stop ();
 	   exit (2);
-	}
-	else {
-	   theWorker. start_etiProcessing ();
-	   cerr << "Handling ensemble " << theName. c_str () <<
-	                    "until you quit" << endl;
-	   run. store (true);
-	   while (run. load () && ((recordTime == -1) || recordTime > 0)) {
-	      if (!isSilent)
-	         fprintf (stderr, "\t\testimated snr: %2d, fibquality %3d\r",
-	                            signalnoise. load (), ficSuccess. load ());
-	      special_sleep (1);
-	      if (recordTime != -1)
-	         recordTime -= 1;
+
+	} else {
+	
+	   if (bDumpEnsemble) {
+		   // Update ensemble details
+		   trim_right(theName);
+		   dabEnsemble.ensemble = theName;
+		   dabEnsemble.channel = theChannel;
+
+		   // Dump the ensemble
+		   std::ofstream file(fmt::format("ensemble-ch-{}.json", dabEnsemble.channel));
+		   json j = dabEnsemble;
+		   file << j;
+		   file.flush();
+	   }
+
+	   if (! bStopAfterEnsembleDump) {
+
+	       // Start processing the ensemble
+	       theWorker.start_etiProcessing();
+	       cerr << "Handling ensemble " << theName. c_str () << "until you quit" << endl;
+
+	       run.store(true);
+	       while (run.load() && ((recordTime == -1) || recordTime > 0)) {
+	          if (!isSilent)
+	             fprintf (stderr, "\t\testimated snr: %2d, fibquality %3d\r", signalnoise.load(), ficSuccess.load());
+	          special_sleep(1);
+	          if (recordTime != -1)
+	             recordTime -= 1;
+	       }
 	   }
 	}
+	theWorker.stop();
 
-//	we started the "worker", so we also stop it here
-	theWorker. stop ();
-	fprintf (stderr, "\n\nterminating\n");
+	fprintf(stderr, "\n\nterminating\n");
 	special_usleep (1000);
 
-	inputDevice	-> stopReader ();
-	delete	inputDevice;
+	inputDevice-> stopReader();
+	delete inputDevice;
+
 	if (etiFile != nullptr)
 	   fclose (etiFile);
 #ifdef	HAVE_DUMPFILE
@@ -746,7 +819,9 @@ void    printOptions (void) {
 "   -P number   number of parallel threads for handling subchannels\n"
 "   -D number   time (in seconds) to look for a DAB ensemble\n"
 "   -M mode     mode to be used \n"
-"   -O filename write output into a file (instead of stdout)\n";
+"   -O filename write output into a file (instead of stdout)\n"
+"   -J write stations to JSON file ensemble-ch-<ensemble_channel>.json\n"
+"   -x Exit after dumping stations\n";
 
 #if !(defined(HAVE_XMLFILES) || defined(HAVE_WAVFILES) || defined(HAVE_RAWFILES))
 	std::cerr <<
