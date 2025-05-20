@@ -1,3 +1,12 @@
+# Forked amendments
+ - eti-cmdline will now dump Stations found to a JSON file (a light-weight DAB scanner)
+ - Shell scripts to scan all ensembles (UK based currently)
+ - Shell script to play stations e.g. `./play.sh "Magic Radio"`
+ - Code amendments to make it less experimental
+
+This code is being used in another project to build a DAB/DAB+ radio (not yet published)
+
+
 # eti-stuff
 
 "eti-stuff" is an attempt to understand the eti structure as defined in ETS 300 799 for Digital Audio Broadcasting (DAB and DAB+).
