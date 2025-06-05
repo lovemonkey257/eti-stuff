@@ -1,4 +1,4 @@
-#! /usr/bin/python
+#! /usr/bin/python3
 
 # Takes a list of ensemble json files and compiles a
 # master station-list.json
