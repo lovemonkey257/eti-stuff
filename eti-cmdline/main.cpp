@@ -1,4 +1,3 @@
-#
 /*
  *    Copyright (C) 2017 .. 2025
  *    Jan van Katwijk (J.vanKatwijk@gmail.com)
@@ -40,8 +39,7 @@
 #include	"sndfile.h"
 #endif
 #include <fstream>
-#include <fmt/format.h>
-#include <nlohmann/json.hpp>
+#include <map>
 #include <boost/algorithm/string.hpp>
 
 #if (defined(__MINGW32__) || defined(_WIN32))
@@ -169,19 +167,13 @@ std::atomic<int16_t> ficSuccess;
 static
 std::atomic<bool>ensembleRecognized;
 
-using json = nlohmann::json;
-
 // Struct to store channels found
 struct dabEnsembleDetails {
     string ensemble;
     string channel;
     map<string, string> stations;
 };
-
 dabEnsembleDetails dabEnsemble;
-// Make the struc JSON serialisable
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(dabEnsembleDetails, ensemble, channel, stations);
-
 bool bStopAfterEnsembleDump = false;
 bool bDumpEnsemble = false;
 
@@ -247,10 +239,14 @@ void	programnameHandler (std::string name, int SId, void *ctx) {
 	it's printed correctly
 	*/
 	unsigned int tempSid = SId; 
- 	dabEnsemble.stations.insert({
+
+	std::string hexSid(20, '\0');
+	sprintf((char *)hexSid.data(), "0x%x", tempSid);
+	dabEnsemble.stations.insert({
  		name.c_str(),
- 		fmt::format("{:#x}",tempSid)
+		hexSid.c_str()
  	});
+	fprintf(stderr, "%s", hexSid.c_str());
 	fprintf (stderr, "program\t (%2d)\t %s\t %X is in the list\n",
 	                               programCounter ++, name. c_str (), SId);
 	mainLocker. unlock ();
@@ -733,15 +729,11 @@ struct sigaction sigact;
  		dabEnsemble.channel = theChannel;
  
  		// Dump the ensemble
-		/*
- 		std::ofstream file(fmt::format("ensemble-ch-{}.json", dabEnsemble.channel));
- 		json j = dabEnsemble;
- 		file << j.dump(-1, ' ', false, json::error_handler_t::ignore);
- 		file.flush();
-		*/
-
 		FILE *jsonf;
-		jsonf = fopen(fmt::format("ensemble-ch-{}.json", dabEnsemble.channel).c_str(), "w");
+		std::string jsonFilename(128, '\0');
+		sprintf((char *)jsonFilename.data(), "ensemble-ch-%s.json", dabEnsemble.channel.c_str());
+		jsonf = fopen(jsonFilename.c_str(), "w");
+
 		fprintf(jsonf, "{\"channel\":\"%s\",\"ensemble\":\"%s\",\"stations\":{", theChannel.c_str(), theName.c_str());
 		int numStations = static_cast<int>(dabEnsemble.stations.size());
 		auto s = dabEnsemble.stations.begin();
