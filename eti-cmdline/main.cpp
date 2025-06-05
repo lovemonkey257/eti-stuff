@@ -177,21 +177,13 @@ struct dabEnsembleDetails {
     string channel;
     map<string, string> stations;
 };
-// Make the struc JSON serialisable
-//NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(dabEnsembleDetails, ensemble, channel, stations);
 
 dabEnsembleDetails dabEnsemble;
+// Make the struc JSON serialisable
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(dabEnsembleDetails, ensemble, channel, stations);
+
 bool bStopAfterEnsembleDump = false;
 bool bDumpEnsemble = false;
-
-/* Serialise JSON */
-void to_json(json& j, const dabEnsembleDetails& d) {
-    j = json{
-       {"ensemble", d.ensemble},
-       {"channel", d.channel},
-       {"stations", d.stations}
-     };
-};
 
 static
 bool	isSilent	= false;
@@ -743,7 +735,7 @@ struct sigaction sigact;
  		// Dump the ensemble
  		std::ofstream file(fmt::format("ensemble-ch-{}.json", dabEnsemble.channel));
  		json j = dabEnsemble;
- 		file << j;
+ 		file << j.dump(-1, ' ', false, json::error_handler_t::ignore);
  		file.flush();
  	}
 	if (! bStopAfterEnsembleDump) {
