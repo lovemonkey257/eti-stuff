@@ -249,9 +249,15 @@ void	programnameHandler (std::string name, int SId, void *ctx) {
 	(void)ctx;
 	mainLocker. lock ();
 	trim_right(name);
+	/*
+	SId is a signed int but some SIds are very large e.g.
+	0xE4910061. Convert it to an unsigned int to ensure
+	it's printed correctly
+	*/
+	unsigned int tempSid = SId; 
  	dabEnsemble.stations.insert({
  		name.c_str(),
- 		fmt::format("{:#x}",SId)
+ 		fmt::format("{:#x}",tempSid)
  	});
 	fprintf (stderr, "program\t (%2d)\t %s\t %X is in the list\n",
 	                               programCounter ++, name. c_str (), SId);
