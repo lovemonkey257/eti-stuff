@@ -803,8 +803,8 @@ void    printOptions () {
 "   -D number   time (in seconds) to look for a DAB ensemble\n"
 "   -M mode     mode to be used \n"
 "   -O filename write output into a file (instead of stdout)\n"
-"   -J write stations to JSON file ensemble-ch-<ensemble_channel>.json\n"
-"   -x Exit after dumping stations\n";	
+"   -J          write stations to JSON file ensemble-ch-<ensemble_channel>.json\n"
+"   -x          Exit after dumping stations\n";	
 
 #if !(defined(HAVE_XMLFILES) || defined(HAVE_WAVFILES) || defined(HAVE_RAWFILES))
 	std::cerr <<
