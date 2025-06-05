@@ -90,7 +90,7 @@ Will use "$ETI_CMD_LINE". Set env var ETI_CMD_LINE to change this e.g.
 To change the list of channels scanned use ETI_SCAN_BLOCKS to specify what
 you want. Note this is a list. e.g
 
-	ETI_SCAN_BLOCKS="10B 11C" ./play.sh scan
+	ETI_SCAN_BLOCKS="10B 11C" ./play-radio.sh scan
 
 Default block list is: ${DEFAULT_BLOCKS[*]}
 
