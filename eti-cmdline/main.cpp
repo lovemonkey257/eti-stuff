@@ -733,10 +733,29 @@ struct sigaction sigact;
  		dabEnsemble.channel = theChannel;
  
  		// Dump the ensemble
+		/*
  		std::ofstream file(fmt::format("ensemble-ch-{}.json", dabEnsemble.channel));
  		json j = dabEnsemble;
  		file << j.dump(-1, ' ', false, json::error_handler_t::ignore);
  		file.flush();
+		*/
+
+		FILE *jsonf;
+		jsonf = fopen(fmt::format("ensemble-ch-{}.json", dabEnsemble.channel).c_str(), "w");
+		fprintf(jsonf, "{\"channel\":\"%s\",\"ensemble\":\"%s\",\"stations\":{", theChannel.c_str(), theName.c_str());
+		int numStations = static_cast<int>(dabEnsemble.stations.size());
+		auto s = dabEnsemble.stations.begin();
+		for(int i = 0; i < numStations; i++){
+			fprintf(jsonf, "\"%s\":\"%s\"", s->first.c_str(), s->second.c_str());
+			// Don't print final comma
+			if (i<numStations-1) {
+				fprintf(jsonf, ",");
+			}
+			s++;
+		}
+		fprintf(jsonf, "}}");
+		fclose(jsonf);
+
  	}
 	if (! bStopAfterEnsembleDump) {
 		theWorker. start_etiProcessing ();
