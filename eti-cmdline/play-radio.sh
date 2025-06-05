@@ -78,7 +78,7 @@ Needs dablin and jq to be installed to work
 
 Will use "$ETI_CMD_LINE". Set env var ETI_CMD_LINE to change this e.g.
 
-	ETI_CMD_LINE=/a/new/path/eti-cmdline-rtlsdr ./play-station.sh scan
+	ETI_CMD_LINE=/a/new/path/eti-cmdline-rtlsdr ./play-radio.sh scan
 
 ./play-radio.sh play <station> 	Plays station. Uses station-list.json from scan
                                 Use the full station name and quotes if spaces in name
